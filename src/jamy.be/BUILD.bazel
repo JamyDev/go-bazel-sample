@@ -1,0 +1,2 @@
+# gazelle:prefix jamy.be
+# gazelle:resolve go go proto/jamy.be/sample //gen/jamy.be/sample:go_default_library

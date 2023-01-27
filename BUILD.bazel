@@ -1,0 +1,5 @@
+load("@bazel_gazelle//:def.bzl", "gazelle")
+
+# gazelle:go_naming_convention go_default_library
+
+gazelle(name = "gazelle")
