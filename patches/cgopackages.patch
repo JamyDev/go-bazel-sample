@@ -1,0 +1,580 @@
+diff --git a/go/tools/gopackagesdriver/aspect.bzl b/go/tools/gopackagesdriver/aspect.bzl
+index 665e0fe1d..475639b1b 100644
+--- a/go/tools/gopackagesdriver/aspect.bzl
++++ b/go/tools/gopackagesdriver/aspect.bzl
+@@ -32,6 +32,7 @@ DEPS_ATTRS = [
+ PROTO_COMPILER_ATTRS = [
+     "compiler",
+     "compilers",
++    "library",
+ ]
+
+@@ -68,6 +69,10 @@ def _go_archive_to_pkg(archive):
+             for src in archive.data.orig_srcs
+             if not src.path.endswith(".go")
+         ],
++        Imports = {
++            pkg.data.importpath: str(pkg.data.label)
++            for pkg in archive.direct
++        },
+     )
+
+ def make_pkg_json(ctx, name, pkg_info):
+@@ -84,7 +89,13 @@ def _go_pkg_info_aspect_impl(target, ctx):
+     transitive_compiled_go_files = []
+
+     for attr in DEPS_ATTRS + PROTO_COMPILER_ATTRS:
+-        for dep in getattr(ctx.rule.attr, attr, []) or []:
++        deps = getattr(ctx.rule.attr, attr, []) or []
++
++        # Some attrs are not iterable, ensure that deps is always iterable.
++        if type(deps) != "list":
++            deps = [deps]
++
++        for dep in deps:
+             if GoPkgInfo in dep:
+                 pkg_info = dep[GoPkgInfo]
+                 transitive_json_files.append(pkg_info.pkg_json_files)
+diff --git a/go/tools/gopackagesdriver/bazel.go b/go/tools/gopackagesdriver/bazel.go
+index e5cab746d..08da745d5 100644
+--- a/go/tools/gopackagesdriver/bazel.go
++++ b/go/tools/gopackagesdriver/bazel.go
+@@ -122,6 +122,7 @@ func (b *Bazel) Build(ctx context.Context, args ...string) ([]string, error) {
+ 		if err := decoder.Decode(&namedSet); err != nil {
+ 			return nil, fmt.Errorf("unable to decode %s: %w", jsonFile.Name(), err)
+ 		}
++
+ 		if namedSet.NamedSetOfFiles != nil {
+ 			for _, f := range namedSet.NamedSetOfFiles.Files {
+ 				fileUrl, err := url.Parse(f.URI)
+diff --git a/go/tools/gopackagesdriver/bazel_json_builder.go b/go/tools/gopackagesdriver/bazel_json_builder.go
+index 04810e3e4..163be0821 100644
+--- a/go/tools/gopackagesdriver/bazel_json_builder.go
++++ b/go/tools/gopackagesdriver/bazel_json_builder.go
+@@ -21,14 +21,15 @@ import (
+ 	"fmt"
+ 	"io/ioutil"
+ 	"os"
++	"path"
+ 	"path/filepath"
+ 	"regexp"
+ 	"strings"
+ )
+
+ type BazelJSONBuilder struct {
+-	bazel    *Bazel
+-	requests []string
++	bazel        *Bazel
++	includeTests bool
+ }
+
+@@ -42,6 +43,8 @@ func (b *BazelJSONBuilder) fileQuery(filename string) string {
+
+ 	if filepath.IsAbs(filename) {
+ 		label, _ = filepath.Rel(b.bazel.WorkspaceRoot(), filename)
++	} else if strings.HasPrefix(filename, "./") {
++		label = strings.TrimPrefix(filename, "./")
+ 	}
+
+ 	if matches := externalRe.FindStringSubmatch(filename); len(matches) == 5 {
+@@ -79,31 +82,57 @@ func (b *BazelJSONBuilder) fileQuery(filename string) string {
+ 	return fmt.Sprintf(`kind("%s", same_pkg_direct_rdeps("%s"))`, strings.Join(kinds, "|"), label)
+ }
+
++func (b *BazelJSONBuilder) getKind() string {
++	kinds := []string{"go_library"}
++	if b.includeTests {
++		kinds = append(kinds, "go_test")
++	}
++
++	return strings.Join(kinds, "|")
++}
++
++func (b *BazelJSONBuilder) localQuery(request string) string {
++	request = path.Clean(request)
++	if filepath.IsAbs(request) {
++		if relPath, err := filepath.Rel(workspaceRoot, request); err == nil {
++			request = relPath
++		}
++	}
++
++	if !strings.HasSuffix(request, "...") {
++		request = fmt.Sprintf("%s:*", request)
++	}
++
++	return fmt.Sprintf(`kind("%s", %s)`, b.getKind(), request)
++}
++
+ func (b *BazelJSONBuilder) packageQuery(importPath string) string {
+ 	if strings.HasSuffix(importPath, "/...") {
+ 		importPath = fmt.Sprintf(`^%s(/.+)?$`, strings.TrimSuffix(importPath, "/..."))
+ 	}
+-	return fmt.Sprintf(`kind("go_library", attr(importpath, "%s", deps(%s)))`, importPath, bazelQueryScope)
++
++	return fmt.Sprintf(
++		`kind("%s", attr(importpath, "%s", deps(%s)))`,
++		b.getKind(),
++		importPath,
++		bazelQueryScope)
+ }
+
+ func (b *BazelJSONBuilder) queryFromRequests(requests ...string) string {
+ 	ret := make([]string, 0, len(requests))
+ 	for _, request := range requests {
+ 		result := ""
+-		if request == "." || request == "./..." {
+-			if bazelQueryScope != "" {
+-				result = fmt.Sprintf(`kind("go_library", %s)`, bazelQueryScope)
+-			} else {
+-				result = fmt.Sprintf(RulesGoStdlibLabel)
+-			}
+-		} else if request == "builtin" || request == "std" {
+-			result = fmt.Sprintf(RulesGoStdlibLabel)
+-		} else if strings.HasPrefix(request, "file=") {
++		if strings.HasSuffix(request, ".go") {
+ 			f := strings.TrimPrefix(request, "file=")
+ 			result = b.fileQuery(f)
++		} else if isLocalPattern(request) {
++			result = b.localQuery(request)
++		} else if request == "builtin" || request == "std" {
++			result = fmt.Sprintf(RulesGoStdlibLabel)
+ 		} else if bazelQueryScope != "" {
+ 			result = b.packageQuery(request)
+ 		}
++
+ 		if result != "" {
+ 			ret = append(ret, result)
+ 		}
+@@ -114,10 +143,10 @@ func (b *BazelJSONBuilder) queryFromRequests(requests ...string) string {
+ 	return strings.Join(ret, " union ")
+ }
+
+-func NewBazelJSONBuilder(bazel *Bazel, requests ...string) (*BazelJSONBuilder, error) {
++func NewBazelJSONBuilder(bazel *Bazel, includeTests bool) (*BazelJSONBuilder, error) {
+ 	return &BazelJSONBuilder{
+-		bazel:    bazel,
+-		requests: requests,
++		bazel:        bazel,
++		includeTests: includeTests,
+ 	}, nil
+ }
+
+@@ -144,11 +173,12 @@ func (b *BazelJSONBuilder) query(ctx context.Context, query string) ([]string, e
+ 	if err != nil {
+ 		return nil, fmt.Errorf("unable to query: %w", err)
+ 	}
++
+ 	return labels, nil
+ }
+
+-func (b *BazelJSONBuilder) Build(ctx context.Context, mode LoadMode) ([]string, error) {
+-	labels, err := b.query(ctx, b.queryFromRequests(b.requests...))
++func (b *BazelJSONBuilder) Labels(ctx context.Context, requests []string) ([]string, error) {
++	labels, err := b.query(ctx, b.queryFromRequests(requests...))
+ 	if err != nil {
+ 		return nil, fmt.Errorf("query failed: %w", err)
+ 	}
+@@ -157,6 +187,10 @@ func (b *BazelJSONBuilder) Build(ctx context.Context, mode LoadMode) ([]string,
+ 		return nil, fmt.Errorf("found no labels matching the requests")
+ 	}
+
++	return labels, nil
++}
++
++func (b *BazelJSONBuilder) Build(ctx context.Context, labels []string, mode LoadMode) ([]string, error) {
+ 	aspects := append(additionalAspects, goDefaultAspect)
+
+ 	buildArgs := concatStringsArrays([]string{
+@@ -179,7 +213,7 @@ func (b *BazelJSONBuilder) Build(ctx context.Context, mode LoadMode) ([]string,
+ 		writer := bufio.NewWriter(targetsFile)
+ 		defer writer.Flush()
+ 		for _, l := range labels {
+-			writer.WriteString(l+"\n")
++			writer.WriteString(l + "\n")
+ 		}
+ 		if err := writer.Flush(); err != nil {
+ 			return nil, fmt.Errorf("unable to flush data to target pattern file: %w", err)
+diff --git a/go/tools/gopackagesdriver/build_context.go b/go/tools/gopackagesdriver/build_context.go
+index 8074746c9..dac786b97 100644
+--- a/go/tools/gopackagesdriver/build_context.go
++++ b/go/tools/gopackagesdriver/build_context.go
+@@ -2,7 +2,6 @@ package main
+
+ import (
+ 	"go/build"
+-	"os"
+ 	"path/filepath"
+ 	"strings"
+ )
+@@ -10,27 +9,24 @@ import (
+ var buildContext = makeBuildContext()
+
+ func makeBuildContext() *build.Context {
+-	bctx := &build.Context{
+-		GOOS:        getenvDefault("GOOS", build.Default.GOOS),
+-		GOARCH:      getenvDefault("GOARCH", build.Default.GOARCH),
+-		GOROOT:      getenvDefault("GOROOT", build.Default.GOROOT),
+-		GOPATH:      getenvDefault("GOPATH", build.Default.GOPATH),
+-		BuildTags:   strings.Split(getenvDefault("GOTAGS", ""), ","),
+-		ReleaseTags: build.Default.ReleaseTags[:],
+-	}
+-	if v, ok := os.LookupEnv("CGO_ENABLED"); ok {
+-		bctx.CgoEnabled = v == "1"
+-	} else {
+-		bctx.CgoEnabled = build.Default.CgoEnabled
+-	}
+-	return bctx
++	bctx := build.Default
++	bctx.BuildTags = strings.Split(getenvDefault("GOTAGS", ""), ",")
++
++	return &bctx
+ }
+
+ func filterSourceFilesForTags(files []string) []string {
+ 	ret := make([]string, 0, len(files))
++
+ 	for _, f := range files {
+ 		dir, filename := filepath.Split(f)
+-		if match, _ := buildContext.MatchFile(dir, filename); match {
++		ext := filepath.Ext(f)
++
++		match, _ := buildContext.MatchFile(dir, filename)
++		// MatchFile filters out anything without a file extension. In the
++		// case of CompiledGoFiles (in particular gco processed files from
++		// the cache), we want them.
++		if match || ext == "" {
+ 			ret = append(ret, f)
+ 		}
+ 	}
+diff --git a/go/tools/gopackagesdriver/driver_request.go b/go/tools/gopackagesdriver/driver_request.go
+index 1b82ed14e..db572dcc6 100644
+--- a/go/tools/gopackagesdriver/driver_request.go
++++ b/go/tools/gopackagesdriver/driver_request.go
+@@ -42,7 +42,7 @@ const (
+ 	NeedDeps
+
+ 	// NeedExportsFile adds ExportFile.
+-	NeedExportsFile
++	NeedExportFile
+
+ 	// NeedTypes adds Types, Fset, and IllTyped.
+ 	NeedTypes
+@@ -64,6 +64,9 @@ const (
+ 	NeedModule
+ )
+
++// Deprecated: NeedExportsFile is a historical misspelling of NeedExportFile.
++const NeedExportsFile = NeedExportFile
++
+ // From https://github.com/golang/tools/blob/v0.1.0/go/packages/external.go#L32
+ // Most fields are disabled since there is no need for them
+ type DriverRequest struct {
+@@ -73,7 +76,7 @@ type DriverRequest struct {
+ 	// BuildFlags are flags that should be passed to the underlying build system.
+ 	// BuildFlags []string `json:"build_flags"`
+ 	// Tests specifies whether the patterns should also return test packages.
+-	// Tests bool `json:"tests"`
++	Tests bool `json:"tests"`
+ 	// Overlay maps file paths (relative to the driver's working directory) to the byte contents
+ 	// of overlay files.
+ 	// Overlay map[string][]byte `json:"overlay"`
+diff --git a/go/tools/gopackagesdriver/flatpackage.go b/go/tools/gopackagesdriver/flatpackage.go
+index 885acfd42..9c22132a5 100644
+--- a/go/tools/gopackagesdriver/flatpackage.go
++++ b/go/tools/gopackagesdriver/flatpackage.go
+@@ -24,7 +24,7 @@ import (
+ 	"strings"
+ )
+
+-type ResolvePkgFunc func(importPath string) *FlatPackage
++type ResolvePkgFunc func(importPath string) string
+
+ // Copy and pasted from golang.org/x/tools/go/packages
+ type FlatPackagesError struct {
+@@ -89,6 +89,7 @@ func WalkFlatPackagesFromJSON(jsonFile string, onPkg PackageFunc) error {
+ 		if err := decoder.Decode(&pkg); err != nil {
+ 			return fmt.Errorf("unable to decode package in %s: %w", f.Name(), err)
+ 		}
++
+ 		onPkg(pkg)
+ 	}
+ 	return nil
+@@ -113,10 +114,10 @@ func (fp *FlatPackage) IsStdlib() bool {
+ 	return fp.Standard
+ }
+
+-func (fp *FlatPackage) ResolveImports(resolve ResolvePkgFunc) {
++func (fp *FlatPackage) ResolveImports(resolve ResolvePkgFunc) error {
+ 	// Stdlib packages are already complete import wise
+ 	if fp.IsStdlib() {
+-		return
++		return nil
+ 	}
+
+ 	fset := token.NewFileSet()
+@@ -124,12 +125,13 @@ func (fp *FlatPackage) ResolveImports(resolve ResolvePkgFunc) {
+ 	for _, file := range fp.CompiledGoFiles {
+ 		f, err := parser.ParseFile(fset, file, nil, parser.ImportsOnly)
+ 		if err != nil {
+-			continue
++			return err
+ 		}
+ 		// If the name is not provided, fetch it from the sources
+ 		if fp.Name == "" {
+ 			fp.Name = f.Name.Name
+ 		}
++
+ 		for _, rawImport := range f.Imports {
+ 			imp, err := strconv.Unquote(rawImport.Path.Value)
+ 			if err != nil {
+@@ -142,14 +144,14 @@ func (fp *FlatPackage) ResolveImports(resolve ResolvePkgFunc) {
+ 			if _, ok := fp.Imports[imp]; ok {
+ 				continue
+ 			}
+-			if pkg := resolve(imp); pkg != nil {
+-				if fp.Imports == nil {
+-					fp.Imports = map[string]string{}
+-				}
+-				fp.Imports[imp] = pkg.ID
++
++			if pkgID := resolve(imp); pkgID != "" {
++				fp.Imports[imp] = pkgID
+ 			}
+ 		}
+ 	}
++
++	return nil
+ }
+
+ func (fp *FlatPackage) IsRoot() bool {
+diff --git a/go/tools/gopackagesdriver/json_packages_driver.go b/go/tools/gopackagesdriver/json_packages_driver.go
+index a2cd0dcec..9bbf34081 100644
+--- a/go/tools/gopackagesdriver/json_packages_driver.go
++++ b/go/tools/gopackagesdriver/json_packages_driver.go
+@@ -47,8 +47,8 @@ func NewJSONPackagesDriver(jsonFiles []string, prf PathResolverFunc) (*JSONPacka
+ 	return jpd, nil
+ }
+
+-func (b *JSONPackagesDriver) Match(pattern ...string) *driverResponse {
+-	rootPkgs, packages := b.registry.Match(pattern...)
++func (b *JSONPackagesDriver) GetResponse(labels []string) *driverResponse {
++	rootPkgs, packages := b.registry.Match(labels)
+
+ 	return &driverResponse{
+ 		NotHandled: false,
+diff --git a/go/tools/gopackagesdriver/main.go b/go/tools/gopackagesdriver/main.go
+index 0e7fab0a7..fea2d2c14 100644
+--- a/go/tools/gopackagesdriver/main.go
++++ b/go/tools/gopackagesdriver/main.go
+@@ -85,12 +85,17 @@ func run() (*driverResponse, error) {
+ 		return emptyResponse, fmt.Errorf("unable to create bazel instance: %w", err)
+ 	}
+
+-	bazelJsonBuilder, err := NewBazelJSONBuilder(bazel, queries...)
++	bazelJsonBuilder, err := NewBazelJSONBuilder(bazel, request.Tests)
+ 	if err != nil {
+ 		return emptyResponse, fmt.Errorf("unable to build JSON files: %w", err)
+ 	}
+
+-	jsonFiles, err := bazelJsonBuilder.Build(ctx, request.Mode)
++	labels, err := bazelJsonBuilder.Labels(ctx, queries)
++	if err != nil {
++		return emptyResponse, fmt.Errorf("unable to lookup package: %w", err)
++	}
++
++	jsonFiles, err := bazelJsonBuilder.Build(ctx, labels, request.Mode)
+ 	if err != nil {
+ 		return emptyResponse, fmt.Errorf("unable to build JSON files: %w", err)
+ 	}
+@@ -100,7 +105,10 @@ func run() (*driverResponse, error) {
+ 		return emptyResponse, fmt.Errorf("unable to load JSON files: %w", err)
+ 	}
+
+-	return driver.Match(queries...), nil
++	// Note: we are returning all files required to build a specific package.
++	// For file queries (`file=`), this means that the CompiledGoFiles will
++	// include more than the only file being specified.
++	return driver.GetResponse(labels), nil
+ }
+
+ func main() {
+diff --git a/go/tools/gopackagesdriver/packageregistry.go b/go/tools/gopackagesdriver/packageregistry.go
+index 8c783abbf..05e620d5c 100644
+--- a/go/tools/gopackagesdriver/packageregistry.go
++++ b/go/tools/gopackagesdriver/packageregistry.go
+@@ -15,20 +15,19 @@
+ package main
+
+ import (
++	"fmt"
+ 	"strings"
+ )
+
+ type PackageRegistry struct {
+-	packagesByID         map[string]*FlatPackage
+-	packagesByImportPath map[string]*FlatPackage
+-	packagesByFile       map[string]*FlatPackage
++	packagesByID map[string]*FlatPackage
++	stdlib       map[string]string
+ }
+
+ func NewPackageRegistry(pkgs ...*FlatPackage) *PackageRegistry {
+ 	pr := &PackageRegistry{
+-		packagesByID:         map[string]*FlatPackage{},
+-		packagesByImportPath: map[string]*FlatPackage{},
+-		packagesByFile:       map[string]*FlatPackage{},
++		packagesByID: map[string]*FlatPackage{},
++		stdlib:       map[string]string{},
+ 	}
+ 	pr.Add(pkgs...)
+ 	return pr
+@@ -37,47 +36,46 @@ func NewPackageRegistry(pkgs ...*FlatPackage) *PackageRegistry {
+ func (pr *PackageRegistry) Add(pkgs ...*FlatPackage) *PackageRegistry {
+ 	for _, pkg := range pkgs {
+ 		pr.packagesByID[pkg.ID] = pkg
+-		pr.packagesByImportPath[pkg.PkgPath] = pkg
+-	}
+-	return pr
+-}
+-
+-func (pr *PackageRegistry) FromPkgPath(pkgPath string) *FlatPackage {
+-	return pr.packagesByImportPath[pkgPath]
+-}
+
+-func (pr *PackageRegistry) Remove(pkgs ...*FlatPackage) *PackageRegistry {
+-	for _, pkg := range pkgs {
+-		delete(pr.packagesByImportPath, pkg.PkgPath)
++		if pkg.IsStdlib() {
++			pr.stdlib[pkg.PkgPath] = pkg.ID
++		}
+ 	}
+ 	return pr
+ }
+
+ func (pr *PackageRegistry) ResolvePaths(prf PathResolverFunc) error {
+-	for _, pkg := range pr.packagesByImportPath {
++	for _, pkg := range pr.packagesByID {
+ 		pkg.ResolvePaths(prf)
+ 		pkg.FilterFilesForBuildTags()
+-		for _, f := range pkg.CompiledGoFiles {
+-			pr.packagesByFile[f] = pkg
+-		}
+-		for _, f := range pkg.CompiledGoFiles {
+-			pr.packagesByFile[f] = pkg
+-		}
+ 	}
+ 	return nil
+ }
+
++// ResolveImports adds stdlib imports to packages. This is required because
++// stdlib packages are not part of the JSON file exports as bazel is unaware of
++// them.
+ func (pr *PackageRegistry) ResolveImports() error {
+-	for _, pkg := range pr.packagesByImportPath {
+-		pkg.ResolveImports(func(importPath string) *FlatPackage {
+-			return pr.FromPkgPath(importPath)
+-		})
++	resolve := func(importPath string) string {
++		if pkgID, ok := pr.stdlib[importPath]; ok {
++			return pkgID
++		}
++
++		return ""
++	}
++
++	for _, pkg := range pr.packagesByID {
++		if err := pkg.ResolveImports(resolve); err != nil {
++			return err
++		}
+ 	}
++
+ 	return nil
+ }
+
+ func (pr *PackageRegistry) walk(acc map[string]*FlatPackage, root string) {
+ 	pkg := pr.packagesByID[root]
++
+ 	acc[pkg.ID] = pkg
+ 	for _, pkgID := range pkg.Imports {
+ 		if _, ok := acc[pkgID]; !ok {
+@@ -86,39 +84,15 @@ func (pr *PackageRegistry) walk(acc map[string]*FlatPackage, root string) {
+ 	}
+ }
+
+-func (pr *PackageRegistry) Match(patterns ...string) ([]string, []*FlatPackage) {
++func (pr *PackageRegistry) Match(labels []string) ([]string, []*FlatPackage) {
+ 	roots := map[string]struct{}{}
+
+-	for _, pattern := range patterns {
+-		if pattern == "." || pattern == "./..." {
+-			for _, pkg := range pr.packagesByImportPath {
+-				if strings.HasPrefix(pkg.ID, "//") {
+-					roots[pkg.ID] = struct{}{}
+-				}
+-			}
+-		} else if strings.HasSuffix(pattern, "/...") {
+-			pkgPrefix := strings.TrimSuffix(pattern, "/...")
+-			for _, pkg := range pr.packagesByImportPath {
+-				if pkgPrefix == pkg.PkgPath || strings.HasPrefix(pkg.PkgPath, pkgPrefix+"/") {
+-					roots[pkg.ID] = struct{}{}
+-				}
+-			}
+-		} else if pattern == "builtin" || pattern == "std" {
+-			for _, pkg := range pr.packagesByImportPath {
+-				if pkg.Standard {
+-					roots[pkg.ID] = struct{}{}
+-				}
+-			}
+-		} else if strings.HasPrefix(pattern, "file=") {
+-			f := ensureAbsolutePathFromWorkspace(strings.TrimPrefix(pattern, "file="))
+-			if pkg, ok := pr.packagesByFile[f]; ok {
+-				roots[pkg.ID] = struct{}{}
+-			}
+-		} else {
+-			if pkg, ok := pr.packagesByImportPath[pattern]; ok {
+-				roots[pkg.ID] = struct{}{}
+-			}
++	for _, label := range labels {
++		if !strings.HasPrefix(label, "@") {
++			label = fmt.Sprintf("@%s", label)
+ 		}
++
++		roots[label] = struct{}{}
+ 	}
+
+ 	walkedPackages := map[string]*FlatPackage{}
+diff --git a/go/tools/gopackagesdriver/utils.go b/go/tools/gopackagesdriver/utils.go
+index 4418a41e6..d5524fddd 100644
+--- a/go/tools/gopackagesdriver/utils.go
++++ b/go/tools/gopackagesdriver/utils.go
+@@ -16,8 +16,11 @@ package main
+
+ import (
+ 	"context"
++	"fmt"
++	"go/build"
+ 	"os"
+ 	"os/signal"
++	"path"
+ 	"path/filepath"
+ )
+
+@@ -57,3 +60,18 @@ func signalContext(parentCtx context.Context, signals ...os.Signal) (ctx context
+
+ 	return ctx, cancel
+ }
++
++func isLocalPattern(pattern string) bool {
++	return build.IsLocalImport(pattern) || filepath.IsAbs(pattern)
++}
++
++func packageID(pattern string) string {
++	pattern = path.Clean(pattern)
++	if filepath.IsAbs(pattern) {
++		if relPath, err := filepath.Rel(workspaceRoot, pattern); err == nil {
++			pattern = relPath
++		}
++	}
++
++	return fmt.Sprintf("//%s", pattern)
++}
