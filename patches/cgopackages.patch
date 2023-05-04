@@ -1,580 +1,1043 @@
-diff --git a/go/tools/gopackagesdriver/aspect.bzl b/go/tools/gopackagesdriver/aspect.bzl
-index 665e0fe1d..475639b1b 100644
---- a/go/tools/gopackagesdriver/aspect.bzl
-+++ b/go/tools/gopackagesdriver/aspect.bzl
-@@ -32,6 +32,7 @@ DEPS_ATTRS = [
- PROTO_COMPILER_ATTRS = [
-     "compiler",
-     "compilers",
-+    "library",
- ]
+diff --git a/examples/basic-gazelle/WORKSPACE b/examples/basic-gazelle/WORKSPACE
+index 2d9a58d00d..7a914a0931 100644
+--- a/examples/basic-gazelle/WORKSPACE
++++ b/examples/basic-gazelle/WORKSPACE
+@@ -6,10 +6,10 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+ # checks the sha.
+ http_archive(
+     name = "io_bazel_rules_go",
+-    sha256 = "56d8c5a5c91e1af73eca71a6fab2ced959b67c86d12ba37feedb0a2dfea441a6",
++    sha256 = "6b65cb7917b4d1709f9410ffe00ecf3e160edf674b78c54a894471320862184f",
+     urls = [
+-        "https://mirror.bazel.build/github.com/bazelbuild/rules_go/releases/download/v0.37.0/rules_go-v0.37.0.zip",
+-        "https://github.com/bazelbuild/rules_go/releases/download/v0.37.0/rules_go-v0.37.0.zip",
++        "https://mirror.bazel.build/github.com/bazelbuild/rules_go/releases/download/v0.39.0/rules_go-v0.39.0.zip",
++        "https://github.com/bazelbuild/rules_go/releases/download/v0.39.0/rules_go-v0.39.0.zip",
+     ],
+ )
 
-@@ -68,6 +69,10 @@ def _go_archive_to_pkg(archive):
-             for src in archive.data.orig_srcs
-             if not src.path.endswith(".go")
-         ],
-+        Imports = {
-+            pkg.data.importpath: str(pkg.data.label)
-+            for pkg in archive.direct
-+        },
+@@ -59,7 +59,7 @@ go_rules_dependencies()
+ # The next rule installs the Go toolchains. The Go version is specified
+ # using the version parameter. This rule will download the Go SDK.
+ # https://github.com/bazelbuild/rules_go/blob/master/go/toolchains.rst#go_register_toolchains
+-go_register_toolchains(version = "1.19.3")
++go_register_toolchains(version = "1.20.2")
+
+ # The following call configured the gazelle dependencies, Go environment and Go SDK.
+ gazelle_dependencies()
+diff --git a/go/def.bzl b/go/def.bzl
+index 9cd9a864ec..08f637a125 100644
+--- a/go/def.bzl
++++ b/go/def.bzl
+@@ -123,7 +123,7 @@ TOOLS_NOGO = [
+
+ # Current version or next version to be tagged. Gazelle and other tools may
+ # check this to determine compatibility.
+-RULES_GO_VERSION = "0.39.0"
++RULES_GO_VERSION = "0.39.1"
+
+ go_context = _go_context
+ go_embed_data = _go_embed_data
+diff --git a/go/platform/BUILD.bazel b/go/platform/BUILD.bazel
+index 2431156237..5f31f37d92 100644
+--- a/go/platform/BUILD.bazel
++++ b/go/platform/BUILD.bazel
+@@ -36,8 +36,3 @@ bzl_library(
+     name = "apple",
+     srcs = ["apple.bzl"],
+ )
+-
+-bzl_library(
+-    name = "crosstool",
+-    srcs = ["crosstool.bzl"],
+-)
+diff --git a/go/platform/crosstool.bzl b/go/platform/crosstool.bzl
+deleted file mode 100644
+index 02ec33bf75..0000000000
+--- a/go/platform/crosstool.bzl
++++ /dev/null
+@@ -1,60 +0,0 @@
+-# Copyright 2020 The Bazel Authors. All rights reserved.
+-#
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#    http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-
+-def _match_apple(_crosstool_top, cpu):
+-    """_match_apple will try to detect wether the inbound crosstool/cpu is
+-    targeting the Apple ecosystem. Apple crosstool CPUs are prefixed, so
+-    matching is easy."""
+-    platform = {
+-        "darwin": "darwin_amd64",
+-        "darwin_x86_64": "darwin_amd64",
+-        "darwin_arm64": "darwin_arm64",
+-        "ios_arm64": "ios_arm64",
+-        "ios_armv7": "ios_arm",
+-        "ios_i386": "ios_386",
+-        "ios_x86_64": "ios_amd64",
+-    }.get(cpu)
+-    if platform:
+-        return "{}_cgo".format(platform)
+-    return None
+-
+-def _match_android(crosstool_top, cpu):
+-    """_match_android will try to detect wether the inbound crosstool is the
+-    Android NDK toolchain. It can either be `//external:android/crosstool` or be
+-    part of the `@androidndk` workspace. After that, translate Android CPUs to
+-    Go CPUs."""
+-    if str(crosstool_top) == "//external:android/crosstool" or \
+-       crosstool_top.workspace_name == "androidndk":
+-        platform_cpu = {
+-            "arm64-v8a": "arm64",
+-            "armeabi-v7a": "arm",
+-            "x86": "386",
+-            "x86_64": "amd64",
+-        }.get(cpu)
+-        if platform_cpu:
+-            return "android_{}_cgo".format(platform_cpu)
+-    return None
+-
+-def platform_from_crosstool(crosstool_top, cpu):
+-    """platform_from_crosstool runs matchers against the crosstool_top/cpu pair
+-    to automatically infer the target platform."""
+-    matchers = [
+-        _match_apple,
+-        _match_android,
+-    ]
+-    for matcher in matchers:
+-        platform = matcher(crosstool_top, cpu)
+-        if platform:
+-            return "@io_bazel_rules_go//go/toolchain:{}".format(platform)
+-    return None
+diff --git a/go/private/actions/BUILD.bazel b/go/private/actions/BUILD.bazel
+index 348e762529..3bd3d15550 100644
+--- a/go/private/actions/BUILD.bazel
++++ b/go/private/actions/BUILD.bazel
+@@ -41,6 +41,7 @@ bzl_library(
+     srcs = ["compilepkg.bzl"],
+     visibility = ["//go:__subpackages__"],
+     deps = [
++        ":utils",
+         "//go/private:mode",
+         "@bazel_skylib//lib:shell",
+     ],
+@@ -63,7 +64,14 @@ bzl_library(
+     srcs = ["stdlib.bzl"],
+     visibility = ["//go:__subpackages__"],
+     deps = [
++        ":utils",
+         "//go/private:mode",
+         "//go/private:providers",
++        "//go/private:sdk",
+     ],
+ )
++
++bzl_library(
++    name = "utils",
++    srcs = ["utils.bzl"],
++)
+diff --git a/go/private/actions/compilepkg.bzl b/go/private/actions/compilepkg.bzl
+index 28c32123f5..441e69c411 100644
+--- a/go/private/actions/compilepkg.bzl
++++ b/go/private/actions/compilepkg.bzl
+@@ -16,10 +16,7 @@ load(
+     "//go/private:mode.bzl",
+     "link_mode_args",
+ )
+-load(
+-    "@bazel_skylib//lib:shell.bzl",
+-    "shell",
+-)
++load("//go/private/actions:utils.bzl", "quote_opts")
+
+ def _archive(v):
+     importpaths = [v.data.importpath]
+@@ -134,8 +131,8 @@ def emit_compilepkg(
+     gc_flags.extend(go.toolchain.flags.compile)
+     gc_flags.extend(link_mode_args(go.mode))
+     asm_flags.extend(link_mode_args(go.mode))
+-    args.add("-gcflags", _quote_opts(gc_flags))
+-    args.add("-asmflags", _quote_opts(asm_flags))
++    args.add("-gcflags", quote_opts(gc_flags))
++    args.add("-asmflags", quote_opts(asm_flags))
+
+     env = go.env
+     if cgo:
+@@ -143,17 +140,17 @@ def emit_compilepkg(
+         inputs.extend(go.crosstool)
+         env["CC"] = go.cgo_tools.c_compiler_path
+         if cppopts:
+-            args.add("-cppflags", _quote_opts(cppopts))
++            args.add("-cppflags", quote_opts(cppopts))
+         if copts:
+-            args.add("-cflags", _quote_opts(copts))
++            args.add("-cflags", quote_opts(copts))
+         if cxxopts:
+-            args.add("-cxxflags", _quote_opts(cxxopts))
++            args.add("-cxxflags", quote_opts(cxxopts))
+         if objcopts:
+-            args.add("-objcflags", _quote_opts(objcopts))
++            args.add("-objcflags", quote_opts(objcopts))
+         if objcxxopts:
+-            args.add("-objcxxflags", _quote_opts(objcxxopts))
++            args.add("-objcxxflags", quote_opts(objcxxopts))
+         if clinkopts:
+-            args.add("-ldflags", _quote_opts(clinkopts))
++            args.add("-ldflags", quote_opts(clinkopts))
+
+     go.actions.run(
+         inputs = inputs,
+@@ -163,6 +160,3 @@ def emit_compilepkg(
+         arguments = [args],
+         env = go.env,
      )
+-
+-def _quote_opts(opts):
+-    return " ".join([shell.quote(opt) if " " in opt else opt for opt in opts])
+diff --git a/go/private/actions/stdlib.bzl b/go/private/actions/stdlib.bzl
+index f8bfbeefa2..1cb953d43c 100644
+--- a/go/private/actions/stdlib.bzl
++++ b/go/private/actions/stdlib.bzl
+@@ -12,6 +12,10 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
 
- def make_pkg_json(ctx, name, pkg_info):
-@@ -84,7 +89,13 @@ def _go_pkg_info_aspect_impl(target, ctx):
-     transitive_compiled_go_files = []
-
-     for attr in DEPS_ATTRS + PROTO_COMPILER_ATTRS:
--        for dep in getattr(ctx.rule.attr, attr, []) or []:
-+        deps = getattr(ctx.rule.attr, attr, []) or []
-+
-+        # Some attrs are not iterable, ensure that deps is always iterable.
-+        if type(deps) != "list":
-+            deps = [deps]
-+
-+        for dep in deps:
-             if GoPkgInfo in dep:
-                 pkg_info = dep[GoPkgInfo]
-                 transitive_json_files.append(pkg_info.pkg_json_files)
-diff --git a/go/tools/gopackagesdriver/bazel.go b/go/tools/gopackagesdriver/bazel.go
-index e5cab746d..08da745d5 100644
---- a/go/tools/gopackagesdriver/bazel.go
-+++ b/go/tools/gopackagesdriver/bazel.go
-@@ -122,6 +122,7 @@ func (b *Bazel) Build(ctx context.Context, args ...string) ([]string, error) {
- 		if err := decoder.Decode(&namedSet); err != nil {
- 			return nil, fmt.Errorf("unable to decode %s: %w", jsonFile.Name(), err)
- 		}
-+
- 		if namedSet.NamedSetOfFiles != nil {
- 			for _, f := range namedSet.NamedSetOfFiles.Files {
- 				fileUrl, err := url.Parse(f.URI)
-diff --git a/go/tools/gopackagesdriver/bazel_json_builder.go b/go/tools/gopackagesdriver/bazel_json_builder.go
-index 04810e3e4..163be0821 100644
---- a/go/tools/gopackagesdriver/bazel_json_builder.go
-+++ b/go/tools/gopackagesdriver/bazel_json_builder.go
-@@ -21,14 +21,15 @@ import (
- 	"fmt"
- 	"io/ioutil"
- 	"os"
-+	"path"
- 	"path/filepath"
- 	"regexp"
- 	"strings"
++load(
++    "//go/private:common.bzl",
++    "COVERAGE_OPTIONS_DENYLIST",
++)
+ load(
+     "//go/private:providers.bzl",
+     "GoStdLib",
+@@ -22,6 +26,8 @@ load(
+     "extldflags_from_cc_toolchain",
+     "link_mode_args",
  )
++load("//go/private:sdk.bzl", "parse_version")
++load("//go/private/actions:utils.bzl", "quote_opts")
 
- type BazelJSONBuilder struct {
--	bazel    *Bazel
--	requests []string
-+	bazel        *Bazel
-+	includeTests bool
- }
+ def emit_stdlib(go):
+     """Returns a standard library for the target configuration.
+@@ -44,33 +50,59 @@ def _stdlib_library_to_source(go, _attr, source, _merge):
+         source["stdlib"] = _build_stdlib(go)
 
-@@ -42,6 +43,8 @@ func (b *BazelJSONBuilder) fileQuery(filename string) string {
+ def _should_use_sdk_stdlib(go):
++    version = parse_version(go.sdk.version)
++    if version and version[0] <= 1 and version[1] <= 19 and go.sdk.experiments:
++        # The precompiled stdlib shipped with 1.19 or below doesn't have experiments
++        return False
+     return (go.sdk.libs and  # go.sdk.libs is non-empty if sdk ships with precompiled .a files
+             go.mode.goos == go.sdk.goos and
+             go.mode.goarch == go.sdk.goarch and
+             not go.mode.race and  # TODO(jayconrod): use precompiled race
+             not go.mode.msan and
+             not go.mode.pure and
+-            not go.sdk.experiments and
++            not go.mode.gc_goopts and
+             go.mode.link == LINKMODE_NORMAL)
 
- 	if filepath.IsAbs(filename) {
- 		label, _ = filepath.Rel(b.bazel.WorkspaceRoot(), filename)
-+	} else if strings.HasPrefix(filename, "./") {
-+		label = strings.TrimPrefix(filename, "./")
- 	}
-
- 	if matches := externalRe.FindStringSubmatch(filename); len(matches) == 5 {
-@@ -79,31 +82,57 @@ func (b *BazelJSONBuilder) fileQuery(filename string) string {
- 	return fmt.Sprintf(`kind("%s", same_pkg_direct_rdeps("%s"))`, strings.Join(kinds, "|"), label)
- }
-
-+func (b *BazelJSONBuilder) getKind() string {
-+	kinds := []string{"go_library"}
-+	if b.includeTests {
-+		kinds = append(kinds, "go_test")
-+	}
+-def _build_stdlib_list_json(go):
++def _build_stdlib_list_json(go, env):
+     out = go.declare_file(go, "stdlib.pkg.json")
+     args = go.builder_args(go, "stdliblist")
+     args.add("-sdk", go.sdk.root_file.dirname)
+     args.add("-out", out)
 +
-+	return strings.Join(kinds, "|")
+     go.actions.run(
+         inputs = go.sdk_files,
+         outputs = [out],
+         mnemonic = "GoStdlibList",
+         executable = go.toolchain._builder,
+         arguments = [args],
+-        env = go.env,
++        env = env,
+     )
+     return out
+
++def _cgo_env(go):
++    env = go.env
++
++    # NOTE(#2545): avoid unnecessary dynamic link
++    # go std library doesn't use C++, so should not have -lstdc++
++    # Also drop coverage flags as nothing in the stdlib is compiled with
++    # coverage - we disable it for all CGo code anyway.
++    ldflags = [
++        option
++        for option in extldflags_from_cc_toolchain(go)
++        if option not in ("-lstdc++", "-lc++") and option not in COVERAGE_OPTIONS_DENYLIST
++    ]
++    env.update({
++        "CGO_ENABLED": "1",
++        "CC": go.cgo_tools.c_compiler_path,
++        "CGO_CFLAGS": " ".join(go.cgo_tools.c_compile_options),
++        "CGO_LDFLAGS": " ".join(ldflags),
++    })
++
++    return env
++
+ def _sdk_stdlib(go):
+     return GoStdLib(
+-        _list_json = _build_stdlib_list_json(go),
++        _list_json = _build_stdlib_list_json(go, _cgo_env(go)),
+         libs = go.sdk.libs,
+         root_file = go.sdk.root_file,
+     )
+@@ -86,23 +118,15 @@ def _build_stdlib(go):
+     if not go.mode.pure:
+         args.add("-package", "runtime/cgo")
+     args.add_all(link_mode_args(go.mode))
++
+     env = go.env
+     if go.mode.pure:
+         env.update({"CGO_ENABLED": "0"})
+     else:
+-        # NOTE(#2545): avoid unnecessary dynamic link
+-        # go std library doesn't use C++, so should not have -lstdc++
+-        ldflags = [
+-            option
+-            for option in extldflags_from_cc_toolchain(go)
+-            if option not in ("-lstdc++", "-lc++")
+-        ]
+-        env.update({
+-            "CGO_ENABLED": "1",
+-            "CC": go.cgo_tools.c_compiler_path,
+-            "CGO_CFLAGS": " ".join(go.cgo_tools.c_compile_options),
+-            "CGO_LDFLAGS": " ".join(ldflags),
+-        })
++        env = _cgo_env(go)
++
++    args.add("-gcflags", quote_opts(go.mode.gc_goopts))
++
+     inputs = (go.sdk.srcs +
+               go.sdk.headers +
+               go.sdk.tools +
+@@ -118,7 +142,7 @@ def _build_stdlib(go):
+         env = env,
+     )
+     return GoStdLib(
+-        _list_json = _build_stdlib_list_json(go),
++        _list_json = _build_stdlib_list_json(go, env),
+         libs = [pkg],
+         root_file = pkg,
+     )
+diff --git a/go/private/actions/utils.bzl b/go/private/actions/utils.bzl
+new file mode 100644
+index 0000000000..b3a360e421
+--- /dev/null
++++ b/go/private/actions/utils.bzl
+@@ -0,0 +1,7 @@
++load(
++    "@bazel_skylib//lib:shell.bzl",
++    "shell",
++)
++
++def quote_opts(opts):
++    return " ".join([shell.quote(opt) if " " in opt else opt for opt in opts])
+diff --git a/go/private/common.bzl b/go/private/common.bzl
+index e47ebd18c2..5d331b72c6 100644
+--- a/go/private/common.bzl
++++ b/go/private/common.bzl
+@@ -243,3 +243,12 @@ def count_group_matches(v, prefix, suffix):
+         count = count + 1
+
+     return count
++
++# C/C++ compiler and linker options related to coverage instrumentation.
++COVERAGE_OPTIONS_DENYLIST = {
++    "--coverage": None,
++    "-ftest-coverage": None,
++    "-fprofile-arcs": None,
++    "-fprofile-instr-generate": None,
++    "-fcoverage-mapping": None,
 +}
-+
-+func (b *BazelJSONBuilder) localQuery(request string) string {
-+	request = path.Clean(request)
-+	if filepath.IsAbs(request) {
-+		if relPath, err := filepath.Rel(workspaceRoot, request); err == nil {
-+			request = relPath
-+		}
-+	}
-+
-+	if !strings.HasSuffix(request, "...") {
-+		request = fmt.Sprintf("%s:*", request)
-+	}
-+
-+	return fmt.Sprintf(`kind("%s", %s)`, b.getKind(), request)
-+}
-+
- func (b *BazelJSONBuilder) packageQuery(importPath string) string {
- 	if strings.HasSuffix(importPath, "/...") {
- 		importPath = fmt.Sprintf(`^%s(/.+)?$`, strings.TrimSuffix(importPath, "/..."))
- 	}
--	return fmt.Sprintf(`kind("go_library", attr(importpath, "%s", deps(%s)))`, importPath, bazelQueryScope)
-+
-+	return fmt.Sprintf(
-+		`kind("%s", attr(importpath, "%s", deps(%s)))`,
-+		b.getKind(),
-+		importPath,
-+		bazelQueryScope)
- }
-
- func (b *BazelJSONBuilder) queryFromRequests(requests ...string) string {
- 	ret := make([]string, 0, len(requests))
- 	for _, request := range requests {
- 		result := ""
--		if request == "." || request == "./..." {
--			if bazelQueryScope != "" {
--				result = fmt.Sprintf(`kind("go_library", %s)`, bazelQueryScope)
--			} else {
--				result = fmt.Sprintf(RulesGoStdlibLabel)
--			}
--		} else if request == "builtin" || request == "std" {
--			result = fmt.Sprintf(RulesGoStdlibLabel)
--		} else if strings.HasPrefix(request, "file=") {
-+		if strings.HasSuffix(request, ".go") {
- 			f := strings.TrimPrefix(request, "file=")
- 			result = b.fileQuery(f)
-+		} else if isLocalPattern(request) {
-+			result = b.localQuery(request)
-+		} else if request == "builtin" || request == "std" {
-+			result = fmt.Sprintf(RulesGoStdlibLabel)
- 		} else if bazelQueryScope != "" {
- 			result = b.packageQuery(request)
- 		}
-+
- 		if result != "" {
- 			ret = append(ret, result)
- 		}
-@@ -114,10 +143,10 @@ func (b *BazelJSONBuilder) queryFromRequests(requests ...string) string {
- 	return strings.Join(ret, " union ")
- }
-
--func NewBazelJSONBuilder(bazel *Bazel, requests ...string) (*BazelJSONBuilder, error) {
-+func NewBazelJSONBuilder(bazel *Bazel, includeTests bool) (*BazelJSONBuilder, error) {
- 	return &BazelJSONBuilder{
--		bazel:    bazel,
--		requests: requests,
-+		bazel:        bazel,
-+		includeTests: includeTests,
- 	}, nil
- }
-
-@@ -144,11 +173,12 @@ func (b *BazelJSONBuilder) query(ctx context.Context, query string) ([]string, e
- 	if err != nil {
- 		return nil, fmt.Errorf("unable to query: %w", err)
- 	}
-+
- 	return labels, nil
- }
-
--func (b *BazelJSONBuilder) Build(ctx context.Context, mode LoadMode) ([]string, error) {
--	labels, err := b.query(ctx, b.queryFromRequests(b.requests...))
-+func (b *BazelJSONBuilder) Labels(ctx context.Context, requests []string) ([]string, error) {
-+	labels, err := b.query(ctx, b.queryFromRequests(requests...))
- 	if err != nil {
- 		return nil, fmt.Errorf("query failed: %w", err)
- 	}
-@@ -157,6 +187,10 @@ func (b *BazelJSONBuilder) Build(ctx context.Context, mode LoadMode) ([]string,
- 		return nil, fmt.Errorf("found no labels matching the requests")
- 	}
-
-+	return labels, nil
-+}
-+
-+func (b *BazelJSONBuilder) Build(ctx context.Context, labels []string, mode LoadMode) ([]string, error) {
- 	aspects := append(additionalAspects, goDefaultAspect)
-
- 	buildArgs := concatStringsArrays([]string{
-@@ -179,7 +213,7 @@ func (b *BazelJSONBuilder) Build(ctx context.Context, mode LoadMode) ([]string,
- 		writer := bufio.NewWriter(targetsFile)
- 		defer writer.Flush()
- 		for _, l := range labels {
--			writer.WriteString(l+"\n")
-+			writer.WriteString(l + "\n")
- 		}
- 		if err := writer.Flush(); err != nil {
- 			return nil, fmt.Errorf("unable to flush data to target pattern file: %w", err)
-diff --git a/go/tools/gopackagesdriver/build_context.go b/go/tools/gopackagesdriver/build_context.go
-index 8074746c9..dac786b97 100644
---- a/go/tools/gopackagesdriver/build_context.go
-+++ b/go/tools/gopackagesdriver/build_context.go
-@@ -2,7 +2,6 @@ package main
-
- import (
- 	"go/build"
--	"os"
- 	"path/filepath"
- 	"strings"
+diff --git a/go/private/context.bzl b/go/private/context.bzl
+index 1451895a41..65f73b5767 100644
+--- a/go/private/context.bzl
++++ b/go/private/context.bzl
+@@ -51,6 +51,7 @@ load(
  )
-@@ -10,27 +9,24 @@ import (
- var buildContext = makeBuildContext()
-
- func makeBuildContext() *build.Context {
--	bctx := &build.Context{
--		GOOS:        getenvDefault("GOOS", build.Default.GOOS),
--		GOARCH:      getenvDefault("GOARCH", build.Default.GOARCH),
--		GOROOT:      getenvDefault("GOROOT", build.Default.GOROOT),
--		GOPATH:      getenvDefault("GOPATH", build.Default.GOPATH),
--		BuildTags:   strings.Split(getenvDefault("GOTAGS", ""), ","),
--		ReleaseTags: build.Default.ReleaseTags[:],
--	}
--	if v, ok := os.LookupEnv("CGO_ENABLED"); ok {
--		bctx.CgoEnabled = v == "1"
--	} else {
--		bctx.CgoEnabled = build.Default.CgoEnabled
--	}
--	return bctx
-+	bctx := build.Default
-+	bctx.BuildTags = strings.Split(getenvDefault("GOTAGS", ""), ",")
-+
-+	return &bctx
+ load(
+     ":common.bzl",
++    "COVERAGE_OPTIONS_DENYLIST",
+     "as_iterable",
+     "goos_to_extension",
+     "goos_to_shared_extension",
+@@ -86,7 +87,7 @@ _UNSUPPORTED_C_COMPILERS = {
+     "clang-cl": None,
  }
 
- func filterSourceFilesForTags(files []string) []string {
- 	ret := make([]string, 0, len(files))
-+
- 	for _, f := range files {
- 		dir, filename := filepath.Split(f)
--		if match, _ := buildContext.MatchFile(dir, filename); match {
-+		ext := filepath.Ext(f)
-+
-+		match, _ := buildContext.MatchFile(dir, filename)
-+		// MatchFile filters out anything without a file extension. In the
-+		// case of CompiledGoFiles (in particular gco processed files from
-+		// the cache), we want them.
-+		if match || ext == "" {
- 			ret = append(ret, f)
- 		}
- 	}
-diff --git a/go/tools/gopackagesdriver/driver_request.go b/go/tools/gopackagesdriver/driver_request.go
-index 1b82ed14e..db572dcc6 100644
---- a/go/tools/gopackagesdriver/driver_request.go
-+++ b/go/tools/gopackagesdriver/driver_request.go
-@@ -42,7 +42,7 @@ const (
- 	NeedDeps
+-_COMPILER_OPTIONS_DENYLIST = {
++_COMPILER_OPTIONS_DENYLIST = dict({
+     # cgo parses the error messages from the compiler.  It can't handle colors.
+     # Ignore both variants of the diagnostics color flag.
+     "-fcolor-diagnostics": None,
+@@ -105,7 +106,9 @@ _COMPILER_OPTIONS_DENYLIST = {
+     "--coverage": None,
+     "-ftest-coverage": None,
+     "-fprofile-arcs": None,
+-}
++    "-fprofile-instr-generate": None,
++    "-fcoverage-mapping": None,
++}, **COVERAGE_OPTIONS_DENYLIST)
 
- 	// NeedExportsFile adds ExportFile.
--	NeedExportsFile
-+	NeedExportFile
+ _LINKER_OPTIONS_DENYLIST = {
+     "-Wl,--gc-sections": None,
+diff --git a/go/private/rules/BUILD.bazel b/go/private/rules/BUILD.bazel
+index 2de381d597..50d2c39be3 100644
+--- a/go/private/rules/BUILD.bazel
++++ b/go/private/rules/BUILD.bazel
+@@ -144,7 +144,6 @@ bzl_library(
+         "//proto:__pkg__",
+     ],
+     deps = [
+-        "//go/platform:crosstool",
+         "//go/private:mode",
+         "//go/private:platforms",
+         "//go/private:providers",
+diff --git a/go/private/rules/binary.bzl b/go/private/rules/binary.bzl
+index 91748eda08..51530b04ca 100644
+--- a/go/private/rules/binary.bzl
++++ b/go/private/rules/binary.bzl
+@@ -430,7 +430,7 @@ def _go_tool_binary_impl(ctx):
+     if sdk.goos == "windows":
+         gopath = ctx.actions.declare_directory("gopath")
+         gocache = ctx.actions.declare_directory("gocache")
+-        cmd = "@echo off\nset GOCACHE=%cd%\\{gocache}\nset GOPATH=%cd%\\{gopath}\n{go} build -o {out} -trimpath {srcs}".format(
++        cmd = "@echo off\nset GOMAXPROCS=1\nset GOCACHE=%cd%\\{gocache}\nset GOPATH=%cd%\\{gopath}\n{go} build -o {out} -trimpath {srcs}".format(
+             gopath = gopath.path,
+             gocache = gocache.path,
+             go = sdk.go.path.replace("/", "\\"),
+@@ -450,7 +450,7 @@ def _go_tool_binary_impl(ctx):
+         )
+     else:
+         # Note: GOPATH is needed for Go 1.16.
+-        cmd = "GOCACHE=$(mktemp -d) GOPATH=$(mktemp -d) {go} build -o {out} -trimpath {srcs}".format(
++        cmd = "GOMAXPROCS=1 GOCACHE=$(mktemp -d) GOPATH=$(mktemp -d) {go} build -o {out} -trimpath {srcs}".format(
+             go = sdk.go.path,
+             out = out.path,
+             srcs = " ".join([f.path for f in ctx.files.srcs]),
+diff --git a/go/private/rules/transition.bzl b/go/private/rules/transition.bzl
+index 2883b9820f..8ee26ae792 100644
+--- a/go/private/rules/transition.bzl
++++ b/go/private/rules/transition.bzl
+@@ -32,13 +32,6 @@ load(
+     "GoLibrary",
+     "GoSource",
+ )
+-load(
+-    "//go/platform:crosstool.bzl",
+-    "platform_from_crosstool",
+-)
+-
+-_DEFAULT_PLATFORMS_VALUE = [Label("@local_config_platform//:host")]
+-_PLATFORMS_LABEL = "//command_line_option:platforms"
 
- 	// NeedTypes adds Types, Fset, and IllTyped.
- 	NeedTypes
-@@ -64,6 +64,9 @@ const (
- 	NeedModule
+ # A list of rules_go settings that are possibly set by go_transition.
+ # Keep their package name in sync with the implementation of
+@@ -101,8 +94,6 @@ def _go_transition_impl(settings, attr):
+
+     goos = getattr(attr, "goos", "auto")
+     goarch = getattr(attr, "goarch", "auto")
+-    crosstool_top = settings.pop("//command_line_option:crosstool_top")
+-    cpu = settings.pop("//command_line_option:cpu")
+     _check_ternary("pure", pure)
+     if goos != "auto" or goarch != "auto":
+         if goos == "auto":
+@@ -115,17 +106,6 @@ def _go_transition_impl(settings, attr):
+             fail('pure is "off" but cgo is not supported on {} {}'.format(goos, goarch))
+         platform = "@io_bazel_rules_go//go/toolchain:{}_{}{}".format(goos, goarch, "_cgo" if cgo else "")
+         settings["//command_line_option:platforms"] = platform
+-    else:
+-        # If the current target platform differs from the default value (the
+-        # host platform), then we don't want to override it with a value
+-        # inferred from the legacy --cpu and --crosstool_top flags. Otherwise
+-        # it would become impossible to "platformize" a Go build without having
+-        # a matching platform mappings file.
+-        if settings[_PLATFORMS_LABEL] == _DEFAULT_PLATFORMS_VALUE:
+-            # Detect the platform the inbound crosstool/cpu.
+-            platform = platform_from_crosstool(crosstool_top, cpu)
+-            if platform:
+-                settings[_PLATFORMS_LABEL] = platform
+
+     tags = getattr(attr, "gotags", [])
+     if tags:
+@@ -181,8 +161,6 @@ request_nogo_transition = transition(
+ go_transition = transition(
+     implementation = _go_transition_impl,
+     inputs = [
+-        "//command_line_option:cpu",
+-        "//command_line_option:crosstool_top",
+         "//command_line_option:platforms",
+     ] + TRANSITIONED_GO_SETTING_KEYS,
+     outputs = [
+diff --git a/go/private/sdk.bzl b/go/private/sdk.bzl
+index c7aa5132e6..5a3ef4228c 100644
+--- a/go/private/sdk.bzl
++++ b/go/private/sdk.bzl
+@@ -95,7 +95,7 @@ def _go_download_sdk_impl(ctx):
+         if not version:
+             highest_version = None
+             for v in sdks_by_version.keys():
+-                pv = _parse_version(v)
++                pv = parse_version(v)
+                 if not pv or _version_is_prerelease(pv):
+                     # skip parse errors and pre-release versions
+                     continue
+@@ -149,7 +149,7 @@ go_download_sdk_rule = repository_rule(
  )
 
-+// Deprecated: NeedExportsFile is a historical misspelling of NeedExportFile.
-+const NeedExportsFile = NeedExportFile
-+
- // From https://github.com/golang/tools/blob/v0.1.0/go/packages/external.go#L32
- // Most fields are disabled since there is no need for them
- type DriverRequest struct {
-@@ -73,7 +76,7 @@ type DriverRequest struct {
- 	// BuildFlags are flags that should be passed to the underlying build system.
- 	// BuildFlags []string `json:"build_flags"`
- 	// Tests specifies whether the patterns should also return test packages.
--	// Tests bool `json:"tests"`
-+	Tests bool `json:"tests"`
- 	// Overlay maps file paths (relative to the driver's working directory) to the byte contents
- 	// of overlay files.
- 	// Overlay map[string][]byte `json:"overlay"`
-diff --git a/go/tools/gopackagesdriver/flatpackage.go b/go/tools/gopackagesdriver/flatpackage.go
-index 885acfd42..9c22132a5 100644
---- a/go/tools/gopackagesdriver/flatpackage.go
-+++ b/go/tools/gopackagesdriver/flatpackage.go
-@@ -24,7 +24,7 @@ import (
- 	"strings"
- )
+ def _define_version_constants(version, prefix = ""):
+-    pv = _parse_version(version)
++    pv = parse_version(version)
+     if pv == None or len(pv) < 3:
+         fail("error parsing sdk version: " + version)
+     major, minor, patch = pv[0], pv[1], pv[2]
+@@ -439,7 +439,7 @@ def _sdk_build_file(ctx, platform, version, experiments):
+     ctx.file("ROOT")
+     goos, _, goarch = platform.partition("_")
 
--type ResolvePkgFunc func(importPath string) *FlatPackage
-+type ResolvePkgFunc func(importPath string) string
+-    pv = _parse_version(version)
++    pv = parse_version(version)
+     if pv != None and pv[1] >= 20:
+         # Turn off coverageredesign GOEXPERIMENT on 1.20+
+         # until rules_go is updated to work with the
+@@ -541,7 +541,7 @@ def _detect_sdk_version(ctx, goroot):
+         version = output_parts[3][len("go"):]
+     else:
+         fail("Could not parse SDK version from '%s version' output: %s" % (go_binary_path, result.stdout))
+-    if _parse_version(version) == None:
++    if parse_version(version) == None:
+         fail("Could not parse SDK version from '%s version' output: %s" % (go_binary_path, result.stdout))
+     if ctx.attr.version and ctx.attr.version != version:
+         fail("SDK is version %s, but version %s was expected" % (version, ctx.attr.version))
+@@ -573,7 +573,7 @@ def _parse_versions_json(data):
+         for sdk in sdks
+     }
 
- // Copy and pasted from golang.org/x/tools/go/packages
- type FlatPackagesError struct {
-@@ -89,6 +89,7 @@ func WalkFlatPackagesFromJSON(jsonFile string, onPkg PackageFunc) error {
- 		if err := decoder.Decode(&pkg); err != nil {
- 			return fmt.Errorf("unable to decode package in %s: %w", f.Name(), err)
- 		}
-+
- 		onPkg(pkg)
- 	}
- 	return nil
-@@ -113,10 +114,10 @@ func (fp *FlatPackage) IsStdlib() bool {
- 	return fp.Standard
- }
+-def _parse_version(version):
++def parse_version(version):
+     """Parses a version string like "1.15.5" and returns a tuple of numbers or None"""
+     l, r = 0, 0
+     parsed = []
+@@ -639,7 +639,7 @@ def go_register_toolchains(version = None, nogo = None, go_version = None, exper
+     if not version:
+         version = go_version  # old name
 
--func (fp *FlatPackage) ResolveImports(resolve ResolvePkgFunc) {
-+func (fp *FlatPackage) ResolveImports(resolve ResolvePkgFunc) error {
- 	// Stdlib packages are already complete import wise
- 	if fp.IsStdlib() {
--		return
-+		return nil
- 	}
+-    sdk_kinds = ("_go_download_sdk", "_go_host_sdk", "_go_local_sdk", "_go_wrap_sdk")
++    sdk_kinds = ("go_download_sdk_rule", "go_host_sdk_rule", "_go_local_sdk", "_go_wrap_sdk")
+     existing_rules = native.existing_rules()
+     sdk_rules = [r for r in existing_rules.values() if r["kind"] in sdk_kinds]
+     if len(sdk_rules) == 0 and "go_sdk" in existing_rules:
+@@ -654,7 +654,7 @@ def go_register_toolchains(version = None, nogo = None, go_version = None, exper
+         elif version == "host":
+             go_host_sdk(name = "go_sdk", experiments = experiments)
+         else:
+-            pv = _parse_version(version)
++            pv = parse_version(version)
+             if not pv:
+                 fail('go_register_toolchains: version must be a string like "1.15.5" or "host"')
+             if _version_less(pv, MIN_SUPPORTED_VERSION):
+diff --git a/go/toolchains.rst b/go/toolchains.rst
+index 3ac06b3ce7..57182aab5c 100644
+--- a/go/toolchains.rst
++++ b/go/toolchains.rst
+@@ -505,10 +505,7 @@ go_context
+ ~~~~~~~~~~
 
- 	fset := token.NewFileSet()
-@@ -124,12 +125,13 @@ func (fp *FlatPackage) ResolveImports(resolve ResolvePkgFunc) {
- 	for _, file := range fp.CompiledGoFiles {
- 		f, err := parser.ParseFile(fset, file, nil, parser.ImportsOnly)
- 		if err != nil {
--			continue
-+			return err
- 		}
- 		// If the name is not provided, fetch it from the sources
- 		if fp.Name == "" {
- 			fp.Name = f.Name.Name
- 		}
-+
- 		for _, rawImport := range f.Imports {
- 			imp, err := strconv.Unquote(rawImport.Path.Value)
- 			if err != nil {
-@@ -142,14 +144,14 @@ func (fp *FlatPackage) ResolveImports(resolve ResolvePkgFunc) {
- 			if _, ok := fp.Imports[imp]; ok {
- 				continue
- 			}
--			if pkg := resolve(imp); pkg != nil {
--				if fp.Imports == nil {
--					fp.Imports = map[string]string{}
--				}
--				fp.Imports[imp] = pkg.ID
-+
-+			if pkgID := resolve(imp); pkgID != "" {
-+				fp.Imports[imp] = pkgID
- 			}
- 		}
- 	}
-+
-+	return nil
- }
+ This collects the information needed to form and return a :type:`GoContext` from
+-a rule ctx.  It uses the attributes and the toolchains.  It can only be used in
+-the implementation of a rule that has the go toolchain attached and the go
+-context data as an attribute. To do this declare the rule using the go_rule
+-wrapper.
++a rule ctx.  It uses the attributes and the toolchains.
 
- func (fp *FlatPackage) IsRoot() bool {
-diff --git a/go/tools/gopackagesdriver/json_packages_driver.go b/go/tools/gopackagesdriver/json_packages_driver.go
-index a2cd0dcec..9bbf34081 100644
---- a/go/tools/gopackagesdriver/json_packages_driver.go
-+++ b/go/tools/gopackagesdriver/json_packages_driver.go
-@@ -47,8 +47,8 @@ func NewJSONPackagesDriver(jsonFiles []string, prf PathResolverFunc) (*JSONPacka
- 	return jpd, nil
- }
+ .. code:: bzl
 
--func (b *JSONPackagesDriver) Match(pattern ...string) *driverResponse {
--	rootPkgs, packages := b.registry.Match(pattern...)
-+func (b *JSONPackagesDriver) GetResponse(labels []string) *driverResponse {
-+	rootPkgs, packages := b.registry.Match(labels)
+@@ -516,13 +513,6 @@ wrapper.
+       go = go_context(ctx)
+       ...
 
- 	return &driverResponse{
- 		NotHandled: false,
-diff --git a/go/tools/gopackagesdriver/main.go b/go/tools/gopackagesdriver/main.go
-index 0e7fab0a7..fea2d2c14 100644
---- a/go/tools/gopackagesdriver/main.go
-+++ b/go/tools/gopackagesdriver/main.go
-@@ -85,12 +85,17 @@ func run() (*driverResponse, error) {
- 		return emptyResponse, fmt.Errorf("unable to create bazel instance: %w", err)
- 	}
+-  my_rule = go_rule(
+-      _my_rule_impl,
+-      attrs = {
+-          ...
+-      },
+-  )
+-
 
--	bazelJsonBuilder, err := NewBazelJSONBuilder(bazel, queries...)
-+	bazelJsonBuilder, err := NewBazelJSONBuilder(bazel, request.Tests)
- 	if err != nil {
- 		return emptyResponse, fmt.Errorf("unable to build JSON files: %w", err)
- 	}
-
--	jsonFiles, err := bazelJsonBuilder.Build(ctx, request.Mode)
-+	labels, err := bazelJsonBuilder.Labels(ctx, queries)
-+	if err != nil {
-+		return emptyResponse, fmt.Errorf("unable to lookup package: %w", err)
-+	}
-+
-+	jsonFiles, err := bazelJsonBuilder.Build(ctx, labels, request.Mode)
- 	if err != nil {
- 		return emptyResponse, fmt.Errorf("unable to build JSON files: %w", err)
- 	}
-@@ -100,7 +105,10 @@ func run() (*driverResponse, error) {
- 		return emptyResponse, fmt.Errorf("unable to load JSON files: %w", err)
- 	}
-
--	return driver.Match(queries...), nil
-+	// Note: we are returning all files required to build a specific package.
-+	// For file queries (`file=`), this means that the CompiledGoFiles will
-+	// include more than the only file being specified.
-+	return driver.GetResponse(labels), nil
- }
-
- func main() {
-diff --git a/go/tools/gopackagesdriver/packageregistry.go b/go/tools/gopackagesdriver/packageregistry.go
-index 8c783abbf..05e620d5c 100644
---- a/go/tools/gopackagesdriver/packageregistry.go
-+++ b/go/tools/gopackagesdriver/packageregistry.go
-@@ -15,20 +15,19 @@
+ +--------------------------------+-----------------------------+-----------------------------------+
+ | **Name**                       | **Type**                    | **Default value**                 |
+diff --git a/go/tools/builders/asm.go b/go/tools/builders/asm.go
+index 133e950fd8..3d64c9ba37 100644
+--- a/go/tools/builders/asm.go
++++ b/go/tools/builders/asm.go
+@@ -15,6 +15,7 @@
  package main
 
  import (
-+	"fmt"
++	"go/build"
+ 	"io/ioutil"
+ 	"os"
+ 	"path/filepath"
+@@ -24,6 +25,12 @@ import (
  	"strings"
  )
 
- type PackageRegistry struct {
--	packagesByID         map[string]*FlatPackage
--	packagesByImportPath map[string]*FlatPackage
--	packagesByFile       map[string]*FlatPackage
-+	packagesByID map[string]*FlatPackage
-+	stdlib       map[string]string
++var ASM_DEFINES = []string{
++	"-D", "GOOS_" + build.Default.GOOS,
++	"-D", "GOARCH_" + build.Default.GOARCH,
++	"-D", "GOOS_GOARCH_" + build.Default.GOOS + "_" + build.Default.GOARCH,
++}
++
+ // buildSymabisFile generates a file from assembly files that is consumed
+ // by the compiler. This is only needed in go1.12+ when there is at least one
+ // .s file. If the symabis file is not needed, no file will be generated,
+@@ -87,8 +94,7 @@ func buildSymabisFile(goenv *env, sFiles, hFiles []fileInfo, asmhdr string) (str
+ 			seenHdrDirs[hdrDir] = true
+ 		}
+ 	}
+-	// TODO(#1894): define GOOS_goos, GOARCH_goarch, both here and in the
+-	// GoAsm action.
++	asmargs = append(asmargs, ASM_DEFINES...)
+ 	asmargs = append(asmargs, "-gensymabis", "-o", symabisName, "--")
+ 	for _, sFile := range sFiles {
+ 		asmargs = append(asmargs, sFile.filename)
+@@ -107,6 +113,7 @@ func asmFile(goenv *env, srcPath, packagePath string, asmFlags []string, outPath
+ 	if packagePath != "" && isGo119OrHigher() {
+ 		args = append(args, "-p", packagePath)
+ 	}
++	args = append(args, ASM_DEFINES...)
+ 	args = append(args, "-trimpath", ".")
+ 	args = append(args, "-o", outPath)
+ 	args = append(args, "--", srcPath)
+diff --git a/go/tools/builders/generate_test_main.go b/go/tools/builders/generate_test_main.go
+index a85e110aed..6d545b9d94 100644
+--- a/go/tools/builders/generate_test_main.go
++++ b/go/tools/builders/generate_test_main.go
+@@ -146,6 +146,11 @@ func testsInShard() []testing.InternalTest {
+ 	if err != nil || totalShards <= 1 {
+ 		return allTests
+ 	}
++	file, err := os.Create(os.Getenv("TEST_SHARD_STATUS_FILE"))
++	if err != nil {
++		log.Fatalf("Failed to touch TEST_SHARD_STATUS_FILE: %v", err)
++	}
++	_ = file.Close()
+ 	shardIndex, err := strconv.Atoi(os.Getenv("TEST_SHARD_INDEX"))
+ 	if err != nil || shardIndex < 0 {
+ 		return allTests
+diff --git a/go/tools/builders/stdlib.go b/go/tools/builders/stdlib.go
+index ed92a97658..ca599ba01a 100644
+--- a/go/tools/builders/stdlib.go
++++ b/go/tools/builders/stdlib.go
+@@ -37,6 +37,8 @@ func stdlib(args []string) error {
+ 	flags.Var(&packages, "package", "Packages to build")
+ 	var experiments multiFlag
+ 	flags.Var(&experiments, "experiment", "Go experiments to enable via GOEXPERIMENT")
++	var gcflags quoteMultiFlag
++	flags.Var(&gcflags, "gcflags", "Go compiler flags")
+ 	if err := flags.Parse(args); err != nil {
+ 		return err
+ 	}
+@@ -129,7 +131,6 @@ You may need to use the flags --cpu=x64_windows --compiler=mingw-gcc.`)
+ 		installArgs = append(installArgs, "-tags", strings.Join(build.Default.BuildTags, ","))
+ 	}
+
+-	gcflags := []string{}
+ 	ldflags := []string{"-trimpath", sandboxPath}
+ 	asmflags := []string{"-trimpath", output}
+ 	if *race {
+diff --git a/go/tools/builders/stdliblist.go b/go/tools/builders/stdliblist.go
+index 9caf37c9e9..aba1c376c7 100644
+--- a/go/tools/builders/stdliblist.go
++++ b/go/tools/builders/stdliblist.go
+@@ -116,20 +116,45 @@ func outputBasePath(cloneBase, p string) string {
+ 	return filepath.Join("__BAZEL_OUTPUT_BASE__", dir)
  }
 
- func NewPackageRegistry(pkgs ...*FlatPackage) *PackageRegistry {
- 	pr := &PackageRegistry{
--		packagesByID:         map[string]*FlatPackage{},
--		packagesByImportPath: map[string]*FlatPackage{},
--		packagesByFile:       map[string]*FlatPackage{},
-+		packagesByID: map[string]*FlatPackage{},
-+		stdlib:       map[string]string{},
- 	}
- 	pr.Add(pkgs...)
- 	return pr
-@@ -37,47 +36,46 @@ func NewPackageRegistry(pkgs ...*FlatPackage) *PackageRegistry {
- func (pr *PackageRegistry) Add(pkgs ...*FlatPackage) *PackageRegistry {
- 	for _, pkg := range pkgs {
- 		pr.packagesByID[pkg.ID] = pkg
--		pr.packagesByImportPath[pkg.PkgPath] = pkg
--	}
--	return pr
--}
--
--func (pr *PackageRegistry) FromPkgPath(pkgPath string) *FlatPackage {
--	return pr.packagesByImportPath[pkgPath]
--}
-
--func (pr *PackageRegistry) Remove(pkgs ...*FlatPackage) *PackageRegistry {
--	for _, pkg := range pkgs {
--		delete(pr.packagesByImportPath, pkg.PkgPath)
-+		if pkg.IsStdlib() {
-+			pr.stdlib[pkg.PkgPath] = pkg.ID
-+		}
- 	}
- 	return pr
- }
-
- func (pr *PackageRegistry) ResolvePaths(prf PathResolverFunc) error {
--	for _, pkg := range pr.packagesByImportPath {
-+	for _, pkg := range pr.packagesByID {
- 		pkg.ResolvePaths(prf)
- 		pkg.FilterFilesForBuildTags()
--		for _, f := range pkg.CompiledGoFiles {
--			pr.packagesByFile[f] = pkg
--		}
--		for _, f := range pkg.CompiledGoFiles {
--			pr.packagesByFile[f] = pkg
--		}
- 	}
- 	return nil
- }
-
-+// ResolveImports adds stdlib imports to packages. This is required because
-+// stdlib packages are not part of the JSON file exports as bazel is unaware of
-+// them.
- func (pr *PackageRegistry) ResolveImports() error {
--	for _, pkg := range pr.packagesByImportPath {
--		pkg.ResolveImports(func(importPath string) *FlatPackage {
--			return pr.FromPkgPath(importPath)
--		})
-+	resolve := func(importPath string) string {
-+		if pkgID, ok := pr.stdlib[importPath]; ok {
-+			return pkgID
+-//  absoluteSourcesPaths replace cloneBase of the absolution
+-//  paths with the label for all source files in a package
++// absoluteSourcesPaths replace cloneBase of the absolution
++// paths with the label for all source files in a package
+ func absoluteSourcesPaths(cloneBase, pkgDir string, srcs []string) []string {
+ 	ret := make([]string, 0, len(srcs))
+ 	pkgDir = outputBasePath(cloneBase, pkgDir)
+ 	for _, src := range srcs {
+-		ret = append(ret, filepath.Join(pkgDir, src))
++		absPath := src
++
++		// Generated files will already have an absolute path. These come from
++		// the compiler's cache.
++		if !filepath.IsAbs(src) {
++			absPath = filepath.Join(pkgDir, src)
 +		}
 +
-+		return ""
++		ret = append(ret, absPath)
+ 	}
+ 	return ret
+ }
+
++// filterGoFiles keeps only files either ending in .go or those without an
++// extension (which are from the cache). This is a work around for
++// https://golang.org/issue/28749: cmd/go puts assembly, C, and C++ files in
++// CompiledGoFiles.
++func filterGoFiles(srcs []string) []string {
++	ret := make([]string, 0, len(srcs))
++	for _, f := range srcs {
++		if ext := filepath.Ext(f); ext != ".go" && ext != "" {
++			continue
++		}
++
++		ret = append(ret, f)
 +	}
 +
-+	for _, pkg := range pr.packagesByID {
-+		if err := pkg.ResolveImports(resolve); err != nil {
-+			return err
++	return ret
++}
++
+ func flatPackageForStd(cloneBase string, pkg *goListPackage) *flatPackage {
+-	// Don't use generated files from the stdlib
+ 	goFiles := absoluteSourcesPaths(cloneBase, pkg.Dir, pkg.GoFiles)
++	compiledGoFiles := absoluteSourcesPaths(cloneBase, pkg.Dir, pkg.CompiledGoFiles)
+
+ 	newPkg := &flatPackage{
+ 		ID:              stdlibPackageID(pkg.ImportPath),
+@@ -139,13 +164,31 @@ func flatPackageForStd(cloneBase string, pkg *goListPackage) *flatPackage {
+ 		Imports:         map[string]string{},
+ 		Standard:        pkg.Standard,
+ 		GoFiles:         goFiles,
+-		CompiledGoFiles: goFiles,
++		CompiledGoFiles: filterGoFiles(compiledGoFiles),
++	}
++
++	// imports
++	//
++	// Imports contains the IDs of all imported packages.
++	// ImportsMap records (path, ID) only where they differ.
++	ids := make(map[string]bool)
++	for _, id := range pkg.Imports {
++		ids[id] = true
+ 	}
+-	for _, imp := range pkg.Imports {
+-		newPkg.Imports[imp] = stdlibPackageID(imp)
++
++	for path, id := range pkg.ImportMap {
++		newPkg.Imports[path] = stdlibPackageID(id)
++		delete(ids, id)
+ 	}
+-	// We don't support CGo for now
+-	delete(newPkg.Imports, "C")
++
++	for id := range ids {
++		if id == "C" {
++			continue
 +		}
- 	}
 +
- 	return nil
++		newPkg.Imports[id] = stdlibPackageID(id)
++	}
++
+ 	return newPkg
  }
 
- func (pr *PackageRegistry) walk(acc map[string]*FlatPackage, root string) {
- 	pkg := pr.packagesByID[root]
-+
- 	acc[pkg.ID] = pkg
- 	for _, pkgID := range pkg.Imports {
- 		if _, ok := acc[pkgID]; !ok {
-@@ -86,39 +84,15 @@ func (pr *PackageRegistry) walk(acc map[string]*FlatPackage, root string) {
+@@ -200,12 +243,18 @@ func stdliblist(args []string) error {
  	}
- }
-
--func (pr *PackageRegistry) Match(patterns ...string) ([]string, []*FlatPackage) {
-+func (pr *PackageRegistry) Match(labels []string) ([]string, []*FlatPackage) {
- 	roots := map[string]struct{}{}
-
--	for _, pattern := range patterns {
--		if pattern == "." || pattern == "./..." {
--			for _, pkg := range pr.packagesByImportPath {
--				if strings.HasPrefix(pkg.ID, "//") {
--					roots[pkg.ID] = struct{}{}
--				}
--			}
--		} else if strings.HasSuffix(pattern, "/...") {
--			pkgPrefix := strings.TrimSuffix(pattern, "/...")
--			for _, pkg := range pr.packagesByImportPath {
--				if pkgPrefix == pkg.PkgPath || strings.HasPrefix(pkg.PkgPath, pkgPrefix+"/") {
--					roots[pkg.ID] = struct{}{}
--				}
--			}
--		} else if pattern == "builtin" || pattern == "std" {
--			for _, pkg := range pr.packagesByImportPath {
--				if pkg.Standard {
--					roots[pkg.ID] = struct{}{}
--				}
--			}
--		} else if strings.HasPrefix(pattern, "file=") {
--			f := ensureAbsolutePathFromWorkspace(strings.TrimPrefix(pattern, "file="))
--			if pkg, ok := pr.packagesByFile[f]; ok {
--				roots[pkg.ID] = struct{}{}
--			}
--		} else {
--			if pkg, ok := pr.packagesByImportPath[pattern]; ok {
--				roots[pkg.ID] = struct{}{}
--			}
-+	for _, label := range labels {
-+		if !strings.HasPrefix(label, "@") {
-+			label = fmt.Sprintf("@%s", label)
- 		}
+ 	os.Setenv("PATH", strings.Join(absPaths, string(os.PathListSeparator)))
+ 	os.Setenv("GOROOT", newGoRoot)
 +
-+		roots[label] = struct{}{}
++	cgoEnabled := os.Getenv("CGO_ENABLED") == "1"
+ 	// Make sure we have an absolute path to the C compiler.
+ 	// TODO(#1357): also take absolute paths of includes and other paths in flags.
+-	os.Setenv("CC", quotePathIfNeeded(abs(os.Getenv("CC"))))
++	ccEnv, ok := os.LookupEnv("CC")
++	if cgoEnabled && !ok {
++		return fmt.Errorf("CC must be set")
++	}
++	os.Setenv("CC", quotePathIfNeeded(abs(ccEnv)))
+
++	// We want to keep the cache around so that the processed files can be used by other tools.
+ 	cachePath := abs(*out + ".gocache")
+-	defer os.RemoveAll(cachePath)
+ 	os.Setenv("GOCACHE", cachePath)
+ 	os.Setenv("GOMODCACHE", cachePath)
+ 	os.Setenv("GOPATH", cachePath)
+@@ -214,6 +263,11 @@ func stdliblist(args []string) error {
+ 	if len(build.Default.BuildTags) > 0 {
+ 		listArgs = append(listArgs, "-tags", strings.Join(build.Default.BuildTags, ","))
  	}
++
++	if cgoEnabled {
++		listArgs = append(listArgs, "-compiled=true")
++	}
++
+ 	listArgs = append(listArgs, "-json", "builtin", "std", "runtime/cgo")
 
- 	walkedPackages := map[string]*FlatPackage{}
-diff --git a/go/tools/gopackagesdriver/utils.go b/go/tools/gopackagesdriver/utils.go
-index 4418a41e6..d5524fddd 100644
---- a/go/tools/gopackagesdriver/utils.go
-+++ b/go/tools/gopackagesdriver/utils.go
-@@ -16,8 +16,11 @@ package main
-
- import (
- 	"context"
-+	"fmt"
-+	"go/build"
- 	"os"
- 	"os/signal"
-+	"path"
- 	"path/filepath"
+ 	jsonFile, err := os.Create(*out)
+@@ -226,6 +280,7 @@ func stdliblist(args []string) error {
+ 	if err := goenv.runCommandToFile(jsonData, os.Stderr, listArgs); err != nil {
+ 		return err
+ 	}
++
+ 	encoder := json.NewEncoder(jsonFile)
+ 	decoder := json.NewDecoder(jsonData)
+ 	for decoder.More() {
+diff --git a/go/tools/go_bin_runner/BUILD.bazel b/go/tools/go_bin_runner/BUILD.bazel
+index a0e26d6546..91be016eff 100644
+--- a/go/tools/go_bin_runner/BUILD.bazel
++++ b/go/tools/go_bin_runner/BUILD.bazel
+@@ -12,18 +12,13 @@ go_library(
+     name = "go_bin_runner_lib",
+     srcs = [
+         "main.go",
+-    ] + select({
+-        "@platforms//os:windows": ["process.go"],
+-        "//conditions:default": ["process_unix.go"],
+-    }),
++        "process.go",
++    ],
+     importpath = "github.com/bazelbuild/rules_go/go/tools/go_bin_runner",
+     visibility = ["//visibility:private"],
+     deps = [
+         "//go/runfiles",
+-    ] + select({
+-        "@platforms//os:windows": [],
+-        "//conditions:default": ["@org_golang_x_sys//unix"],
+-    }),
++    ],
  )
 
-@@ -57,3 +60,18 @@ func signalContext(parentCtx context.Context, signals ...os.Signal) (ctx context
+ go_binary(
+diff --git a/go/tools/go_bin_runner/process.go b/go/tools/go_bin_runner/process.go
+index 8b344c9612..af23654998 100644
+--- a/go/tools/go_bin_runner/process.go
++++ b/go/tools/go_bin_runner/process.go
+@@ -1,5 +1,3 @@
+-//go:build !unix
+-
+ package main
 
- 	return ctx, cancel
+ import (
+diff --git a/go/tools/go_bin_runner/process_unix.go b/go/tools/go_bin_runner/process_unix.go
+deleted file mode 100644
+index f59af5d2b1..0000000000
+--- a/go/tools/go_bin_runner/process_unix.go
++++ /dev/null
+@@ -1,11 +0,0 @@
+-//go:build unix
+-
+-package main
+-
+-import (
+-	"golang.org/x/sys/unix"
+-)
+-
+-func ReplaceWithProcess(args, env []string) error {
+-	return unix.Exec(args[0], args, env)
+-}
+diff --git a/go/tools/gopackagesdriver/BUILD.bazel b/go/tools/gopackagesdriver/BUILD.bazel
+index 46aa746499..542b75adc9 100644
+--- a/go/tools/gopackagesdriver/BUILD.bazel
++++ b/go/tools/gopackagesdriver/BUILD.bazel
+@@ -1,4 +1,5 @@
+ load("//go:def.bzl", "go_binary", "go_library")
++load(":aspect.bzl", "bazel_supports_canonical_label_literals")
+
+ go_library(
+     name = "gopackagesdriver_lib",
+@@ -20,5 +21,19 @@ go_library(
+ go_binary(
+     name = "gopackagesdriver",
+     embed = [":gopackagesdriver_lib"],
++    x_defs = {
++        # Determine the name of the rules_go repository as we need to specify it when invoking the
++        # aspect.
++        # If canonical label literals are supported, we can use a canonical label literal (starting
++        # with @@) to pass the repository_name() through repo mapping unchanged.
++        # If canonical label literals are not supported, then bzlmod is certainly not enabled and
++        # we can assume that the repository name is not affected by repo mappings.
++        # If run in the rules_go repo itself, repository_name() returns "@", which is equivalent to
++        # "@io_bazel_rules_go" since Bazel 6:
++        # https://github.com/bazelbuild/bazel/commit/7694cf75e6366b92e3905c2ad60234cda57627ee
++        # TODO: Once we drop support for Bazel 5, we can remove the feature detection logic and
++        #       use "@" + repository_name().
++        "rulesGoRepositoryName": "@" + repository_name() if bazel_supports_canonical_label_literals() else repository_name(),
++    },
+     visibility = ["//visibility:public"],
+ )
+diff --git a/go/tools/gopackagesdriver/aspect.bzl b/go/tools/gopackagesdriver/aspect.bzl
+index e291ae85a2..665e0fe1d2 100644
+--- a/go/tools/gopackagesdriver/aspect.bzl
++++ b/go/tools/gopackagesdriver/aspect.bzl
+@@ -34,6 +34,9 @@ PROTO_COMPILER_ATTRS = [
+     "compilers",
+ ]
+
++def bazel_supports_canonical_label_literals():
++    return str(Label("//:bogus")).startswith("@@")
++
+ def is_file_external(f):
+     return f.owner.workspace_root != ""
+
+diff --git a/go/tools/gopackagesdriver/bazel_json_builder.go b/go/tools/gopackagesdriver/bazel_json_builder.go
+index 3067667c7e..04810e3e40 100644
+--- a/go/tools/gopackagesdriver/bazel_json_builder.go
++++ b/go/tools/gopackagesdriver/bazel_json_builder.go
+@@ -31,9 +31,7 @@ type BazelJSONBuilder struct {
+ 	requests []string
  }
+
+-const (
+-	RulesGoStdlibLabel = "@io_bazel_rules_go//:stdlib"
+-)
++var RulesGoStdlibLabel = rulesGoRepositoryName + "//:stdlib"
+
+ var _defaultKinds = []string{"go_library", "go_test", "go_binary"}
+
+diff --git a/go/tools/gopackagesdriver/main.go b/go/tools/gopackagesdriver/main.go
+index 06da64823b..0e7fab0a7d 100644
+--- a/go/tools/gopackagesdriver/main.go
++++ b/go/tools/gopackagesdriver/main.go
+@@ -49,9 +49,9 @@ type driverResponse struct {
+ }
+
+ var (
+-	// It seems https://github.com/bazelbuild/bazel/issues/3115 isn't fixed when specifying
+-	// the aspect from the command line. Use this trick in the mean time.
+-	rulesGoRepositoryName = getenvDefault("GOPACKAGESDRIVER_RULES_GO_REPOSITORY_NAME", "@io_bazel_rules_go")
++	// Injected via x_defs.
 +
-+func isLocalPattern(pattern string) bool {
-+	return build.IsLocalImport(pattern) || filepath.IsAbs(pattern)
-+}
++	rulesGoRepositoryName string
+ 	goDefaultAspect       = rulesGoRepositoryName + "//go/tools/gopackagesdriver:aspect.bzl%go_pkg_info_aspect"
+ 	bazelBin              = getenvDefault("GOPACKAGESDRIVER_BAZEL", "bazel")
+ 	bazelStartupFlags     = strings.Fields(os.Getenv("GOPACKAGESDRIVER_BAZEL_FLAGS"))
+diff --git a/tests/bcr/BUILD.bazel b/tests/bcr/BUILD.bazel
+index 813d72fef9..d5c5f6f1fd 100644
+--- a/tests/bcr/BUILD.bazel
++++ b/tests/bcr/BUILD.bazel
+@@ -45,3 +45,11 @@ go_test(
+     embed = [":mockable"],
+     deps = ["@my_rules_go//extras/gomock"],
+ )
 +
-+func packageID(pattern string) string {
-+	pattern = path.Clean(pattern)
-+	if filepath.IsAbs(pattern) {
-+		if relPath, err := filepath.Rel(workspaceRoot, pattern); err == nil {
-+			pattern = relPath
-+		}
++sh_test(
++    name = "go_version_test",
++    srcs = ["go_version_test.sh"],
++    data = ["@my_rules_go//go"],
++    env = {"GO_TOOL_RLOCATION": "$(rlocationpath @my_rules_go//go)"},
++    deps = ["@bazel_tools//tools/bash/runfiles"],
++)
+diff --git a/tests/bcr/go_version_test.sh b/tests/bcr/go_version_test.sh
+new file mode 100755
+index 0000000000..986d91d7ce
+--- /dev/null
++++ b/tests/bcr/go_version_test.sh
+@@ -0,0 +1,19 @@
++#!/usr/bin/env bash
++
++# --- begin runfiles.bash initialization v3 ---
++# Copy-pasted from the Bazel Bash runfiles library v3.
++set -uo pipefail; set +e; f=bazel_tools/tools/bash/runfiles/runfiles.bash
++source "${RUNFILES_DIR:-/dev/null}/$f" 2>/dev/null || \
++  source "$(grep -sm1 "^$f " "${RUNFILES_MANIFEST_FILE:-/dev/null}" | cut -f2- -d' ')" 2>/dev/null || \
++  source "$0.runfiles/$f" 2>/dev/null || \
++  source "$(grep -sm1 "^$f " "$0.runfiles_manifest" | cut -f2- -d' ')" 2>/dev/null || \
++  source "$(grep -sm1 "^$f " "$0.exe.runfiles_manifest" | cut -f2- -d' ')" 2>/dev/null || \
++  { echo>&2 "ERROR: cannot find $f"; exit 1; }; f=; set -e
++# --- end runfiles.bash initialization v3 ---
++
++GO_TOOL=$(rlocation "$GO_TOOL_RLOCATION")
++# Set runfiles variables for subprocess.
++runfiles_export_envvars
++# Simulate a bazel run environment.
++export BUILD_WORKING_DIRECTORY=$(pwd)
++[[ "$("$GO_TOOL" version)" =~ ^go ]]
+diff --git a/tests/core/cross/BUILD.bazel b/tests/core/cross/BUILD.bazel
+index 04a7ba1338..ec1799847c 100644
+--- a/tests/core/cross/BUILD.bazel
++++ b/tests/core/cross/BUILD.bazel
+@@ -33,6 +33,14 @@ go_binary(
+     deps = [":platform_lib"],
+ )
+
++go_binary(
++    name = "asm_cross",
++    srcs = ["asm.s", "main.go"],
++    goarch = "386",
++    goos = "linux",
++    deps = [":platform_lib"],
++)
++
+ go_binary(
+     name = "native_bin",
+     srcs = ["main.go"],
+diff --git a/tests/core/cross/asm.s b/tests/core/cross/asm.s
+new file mode 100644
+index 0000000000..7a5d521933
+--- /dev/null
++++ b/tests/core/cross/asm.s
+@@ -0,0 +1,15 @@
++// Example assembly copied from https://github.com/rpccloud/goid
++
++#include "go_asm.h"
++#include "textflag.h"
++
++#ifdef GOARCH_386
++#define	get_tls(r)	MOVL TLS, r
++#define	g(r)	0(r)(TLS*1)
++#endif
++
++TEXT ·getg(SB), NOSPLIT, $0-4
++    get_tls(CX)
++    MOVL    g(CX), AX
++    MOVL    AX, ret+0(FP)
++    RET
+diff --git a/tests/core/go_test/BUILD.bazel b/tests/core/go_test/BUILD.bazel
+index f6f600d945..b77c851bc5 100644
+--- a/tests/core/go_test/BUILD.bazel
++++ b/tests/core/go_test/BUILD.bazel
+@@ -244,6 +244,12 @@ go_test(
+     ],
+ )
+
++go_test(
++    name = "sharding_test",
++    srcs = ["sharding_test.go"],
++    shard_count = 2,
++)
++
+ go_bazel_test(
+     name = "env_inherit_test",
+     srcs = ["env_inherit_test.go"],
+diff --git a/tests/core/go_test/sharding_test.go b/tests/core/go_test/sharding_test.go
+new file mode 100644
+index 0000000000..a83bb85cb4
+--- /dev/null
++++ b/tests/core/go_test/sharding_test.go
+@@ -0,0 +1,13 @@
++package sharding_test
++
++import (
++	"log"
++	"os"
++	"testing"
++)
++
++func TestShardStatusFile(t *testing.T) {
++	if _, err := os.Stat(os.Getenv("TEST_SHARD_STATUS_FILE")); err != nil {
++		log.Fatalf("Expected Go test runner to create TEST_SHARD_STATUS_FILE: %v", err)
 +	}
-+
-+	return fmt.Sprintf("//%s", pattern)
 +}
+diff --git a/tools/gopackagesdriver.sh b/tools/gopackagesdriver.sh
+index b29cc410ef..4f84de4137 100755
+--- a/tools/gopackagesdriver.sh
++++ b/tools/gopackagesdriver.sh
+@@ -1,3 +1,2 @@
+ #!/usr/bin/env bash
+-export GOPACKAGESDRIVER_RULES_GO_REPOSITORY_NAME=
+ exec bazel run --tool_tag=gopackagesdriver -- //go/tools/gopackagesdriver "${@}"

@@ -1,0 +1,13 @@
+diff --git a/toolchain/zig_toolchain.bzl b/toolchain/zig_toolchain.bzl
+index 7ffdba8..f9b0b8b 100644
+--- a/toolchain/zig_toolchain.bzl
++++ b/toolchain/zig_toolchain.bzl
+@@ -75,7 +75,7 @@ def _compilation_mode_features(ctx):
+                 actions = actions,
+                 flag_groups = [
+                     flag_group(
+-                        flags = ["-fno-lto", "-Wl,-S"],
++                        flags = ["-fno-sanitize=undefined", "-fno-lto", "-Wl,-S"],
+                     ),
+                 ],
+             ),

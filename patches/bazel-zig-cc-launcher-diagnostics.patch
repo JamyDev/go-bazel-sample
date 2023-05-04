@@ -1,0 +1,80 @@
+
+---
+ toolchain/defs.bzl | 47 ++++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 37 insertions(+), 10 deletions(-)
+
+diff --git a/toolchain/defs.bzl b/toolchain/defs.bzl
+index bd33a14..a46d2e8 100644
+--- a/toolchain/defs.bzl
++++ b/toolchain/defs.bzl
+@@ -45,6 +45,29 @@ _HOST_PLATFORM_EXT = {
+     "windows-x86_64": "zip",
+ }
+
++_compile_failed = """
++Compilation of launcher.zig failed:
++command={compile_cmd}
++return_code={return_code}
++stderr={stderr}
++stdout={stdout}
++
++You probably hit a rare but known race in Zig SDK. Congratulations?
++
++We are working on fixing it with Zig Software Foundation. If you are curious,
++you may follow along in https://github.com/ziglang/zig/issues/14815, #zig-cc
++and GO-1900.
++
++There isn't much to do now but wait. To proceed with your life, apply the
++following workaround:
++$ rm -fr {cache_prefix}
++$ <... re-run your command ...>
++
++Sorry and thank you for bearing with us!
++-- Go Monorepo team.
++
++"""
++
+ def toolchains(
+         version = _VERSION,
+         url_formats = [URL_FORMAT_NIGHTLY, URL_FORMAT_JAKSTYS],
+@@ -176,13 +199,15 @@ def _zig_repository_impl(repository_ctx):
+         },
+     )
+
++    compile_cmd = [
++        paths.join("..", "zig"),
++        "build-exe",
++        "-OReleaseSafe",
++        "launcher.zig",
++    ] + (["-static"] if os == "linux" else [])
++
+     ret = repository_ctx.execute(
+-        [
+-            paths.join("..", "zig"),
+-            "build-exe",
+-            "-OReleaseSafe",
+-            "launcher.zig",
+-        ] + (["-static"] if os == "linux" else []),
++        compile_cmd,
+         working_directory = "tools",
+         environment = {
+             "ZIG_LOCAL_CACHE_DIR": cache_prefix,
+@@ -190,10 +215,12 @@ def _zig_repository_impl(repository_ctx):
+         },
+     )
+     if ret.return_code != 0:
+-        fail("compilation failed:\nreturn_code={}\nstderr={}\nstdout={}".format(
+-            ret.return_code,
+-            ret.stdout,
+-            ret.stderr,
++        fail(_compile_failed.format(
++            compile_cmd = " ".join([_quote(c) for c in compile_cmd]),
++            return_code = ret.return_code,
++            stdout = ret.stdout,
++            stderr = ret.stderr,
++            cache_prefix = cache_prefix,
+         ))
+
+     exe = ".exe" if os == "windows" else ""
+--
+2.34.1

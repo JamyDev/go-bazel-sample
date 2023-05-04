@@ -1,0 +1,49 @@
+diff --git a/toolchain/defs.bzl b/toolchain/defs.bzl
+index e50f5e3..2b057e7 100644
+--- a/toolchain/defs.bzl
++++ b/toolchain/defs.bzl
+@@ -83,7 +83,11 @@ __asm__(".symver {from_function}, {to_function_abi}");
+ #endif
+ """
+ 
+-def _glibc_hack(from_function, to_function_abi):
++_macro_redef = """
++#define {from_function} {to_function}
++"""
++
++def _glibc_hack(from_function, to_function_abi, redefine_macro):
+     # Cannot use .format(...) here, because starlark thinks
+     # that the byte 3 (the opening brace on the first line)
+     # is a nested { ... }, returning an error:
+@@ -94,6 +98,11 @@ def _glibc_hack(from_function, to_function_abi):
+         from_function = from_function,
+         to_function_abi = to_function_abi,
+     )
++    if redefine_macro:
++        header += _macro_redef.format(
++            from_function = from_function,
++            to_function = to_function
++        )
+     return struct(
+         mapfile = mapfile,
+         header = header,
+@@ -205,13 +214,13 @@ def _zig_repository_impl(repository_ctx):
+             )
+             repository_ctx.symlink("tools/launcher{}".format(exe), tool_path)
+ 
+-    fcntl_hack = _glibc_hack("fcntl64", "fcntl@GLIBC_2.2.5")
++    fcntl_hack = _glibc_hack("fcntl64", "fcntl@GLIBC_2.2.5", False)
+     repository_ctx.file("glibc-hacks/fcntl.map", content = fcntl_hack.mapfile)
+     repository_ctx.file("glibc-hacks/fcntl.h", content = fcntl_hack.header)
+-    res_search_amd64 = _glibc_hack("res_search", "__res_search@GLIBC_2.2.5")
++    res_search_amd64 = _glibc_hack("res_search", "__res_search@GLIBC_2.2.5", True)
+     repository_ctx.file("glibc-hacks/res_search-amd64.map", content = res_search_amd64.mapfile)
+     repository_ctx.file("glibc-hacks/res_search-amd64.h", content = res_search_amd64.header)
+-    res_search_arm64 = _glibc_hack("res_search", "__res_search@GLIBC_2.17")
++    res_search_arm64 = _glibc_hack("res_search", "__res_search@GLIBC_2.17", True)
+     repository_ctx.file("glibc-hacks/res_search-arm64.map", content = res_search_arm64.mapfile)
+     repository_ctx.file("glibc-hacks/res_search-arm64.h", content = res_search_arm64.header)
+ 
+-- 
+2.30.2
+
